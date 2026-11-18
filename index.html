@@ -4317,39 +4317,77 @@ three/build/three.module.js:
 */
 </script>
 <script>
-/* Música de ambiente autocontenida (Web Audio API) — sin archivos ni cargas externas */
+/* Música lo-fi autocontenida (Web Audio API) — progresión de acordes + pad cálido + wobble de cinta + crackle de vinilo. Sin archivos ni cargas externas */
 (function(){
   var play=document.getElementById('play');
   var cap=document.getElementById('cap');
   var snd=document.getElementById('snd');
   var stopBtn=cap?cap.querySelector('[data-stop]'):null;
-  var ctx,master,started=false,soundOn=false;
-  var LEVEL=0.34,FADE=1.2;
+  var ctx,master,padBus,wob,started=false,soundOn=false,timer=null,idx=0;
+  var LEVEL=0.32,FADE=1.0,STEP=3.6; /* STEP: segundos por acorde */
+  /* progresión lo-fi descendente: Fmaj7 - Em7 - Dm7 - Cmaj7 — [bajo,[tonos]] */
+  var CHORDS=[
+    [87.31,[174.61,220.00,261.63,329.63]],
+    [82.41,[164.81,196.00,246.94,293.66]],
+    [73.42,[146.83,174.61,220.00,261.63]],
+    [65.41,[130.81,164.81,196.00,246.94]]
+  ];
   function initAudio(){
     if(started)return;
     try{
       var AC=window.AudioContext||window.webkitAudioContext;
       if(!AC)return;
       ctx=new AC();
-      /* limitador de seguridad: permite subir el volumen sin saturar */
+      /* limitador de seguridad */
       var comp=ctx.createDynamicsCompressor();
-      comp.threshold.value=-3;comp.knee.value=6;comp.ratio.value=20;comp.attack.value=0.003;comp.release.value=0.25;
+      comp.threshold.value=-6;comp.knee.value=8;comp.ratio.value=12;comp.attack.value=0.004;comp.release.value=0.25;
       comp.connect(ctx.destination);
       master=ctx.createGain();master.gain.value=0.0001;master.connect(comp);
-      var trem=ctx.createGain();trem.gain.value=1;trem.connect(master);
-      var lp=ctx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=1800;lp.Q.value=0.6;lp.connect(trem);
-      var sweep=ctx.createOscillator();sweep.type='sine';sweep.frequency.value=0.05;
-      var sweepG=ctx.createGain();sweepG.gain.value=600;sweep.connect(sweepG);sweepG.connect(lp.frequency);sweep.start();
-      var tl=ctx.createOscillator();tl.type='sine';tl.frequency.value=0.1;
-      var tg=ctx.createGain();tg.gain.value=0.1;tl.connect(tg);tg.connect(trem.gain);tl.start();
-      var voices=[[130.81,0.18,'sine'],[196.00,0.16,'triangle'],[261.63,0.16,'sine'],[329.63,0.10,'triangle'],[392.00,0.08,'sine']];
-      voices.forEach(function(v,i){
-        var o=ctx.createOscillator();o.type=v[2];o.frequency.value=v[0];o.detune.value=(i-2)*4;
-        var g=ctx.createGain();g.gain.value=v[1];o.connect(g);g.connect(lp);o.start();
-      });
+      /* bus cálido (lo-fi = agudos suaves) */
+      padBus=ctx.createBiquadFilter();padBus.type='lowpass';padBus.frequency.value=1500;padBus.Q.value=0.4;padBus.connect(master);
+      /* wobble de cinta: LFO lento que modula el detune de cada nota */
+      var wobOsc=ctx.createOscillator();wobOsc.type='sine';wobOsc.frequency.value=0.28;
+      wob=ctx.createGain();wob.gain.value=7;wobOsc.connect(wob);wobOsc.start();
+      makeCrackle();
       started=true;
     }catch(e){ctx=null;}
   }
+  function makeCrackle(){
+    var dur=4,sr=ctx.sampleRate,buf=ctx.createBuffer(1,Math.floor(sr*dur),sr),d=buf.getChannelData(0);
+    for(var i=0;i<d.length;i++){
+      var s=(Math.random()*2-1)*0.025;
+      if(Math.random()<0.0008) s+=(Math.random()*2-1)*0.55;
+      d[i]=s;
+    }
+    var src=ctx.createBufferSource();src.buffer=buf;src.loop=true;
+    var hp=ctx.createBiquadFilter();hp.type='highpass';hp.frequency.value=1200;
+    var cg=ctx.createGain();cg.gain.value=0.35;
+    src.connect(hp);hp.connect(cg);cg.connect(master);src.start();
+  }
+  function note(freq,type,peak,detune,t,atk,hold,rel){
+    var o=ctx.createOscillator();o.type=type;o.frequency.value=freq;o.detune.value=detune;
+    if(wob)wob.connect(o.detune);
+    var g=ctx.createGain();g.gain.value=0.0001;o.connect(g);g.connect(padBus);
+    var t1=t+atk,t2=t+atk+hold,t3=t+atk+hold+rel;
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.linearRampToValueAtTime(peak,t1);
+    g.gain.setValueAtTime(peak,t2);
+    g.gain.linearRampToValueAtTime(0.0001,t3);
+    o.start(t);o.stop(t3+0.05);
+  }
+  function playChord(c){
+    if(!ctx)return;
+    var t=ctx.currentTime,atk=0.9,hold=Math.max(STEP-atk,0.5),rel=1.3;
+    note(c[0],'sine',0.30,0,t,atk,hold,rel);        /* bajo */
+    note(c[0]*2,'triangle',0.10,0,t,atk,hold,rel);  /* refuerzo una octava */
+    c[1].forEach(function(f){
+      note(f,'triangle',0.085,+6,t,atk,hold,rel);   /* pad (par detune = calidez) */
+      note(f,'triangle',0.085,-6,t,atk,hold,rel);
+    });
+  }
+  function loop(){ if(!soundOn)return; playChord(CHORDS[idx]); idx=(idx+1)%CHORDS.length; }
+  function startLoop(){ if(timer)return; idx=0; loop(); timer=setInterval(loop,STEP*1000); }
+  function stopLoop(){ if(timer){clearInterval(timer);timer=null;} }
   function schedule(){
     if(!ctx||!master)return;
     var t=ctx.currentTime;
@@ -4362,7 +4400,7 @@ three/build/three.module.js:
     if(ctx.state==='suspended'){ctx.resume().then(schedule).catch(schedule);}else{schedule();}
   }
   function updateBtn(){if(snd){snd.textContent=(soundOn?'🔊':'🔈')+' Música';snd.setAttribute('aria-pressed',soundOn?'true':'false');}}
-  function setSound(on){soundOn=on;if(on)initAudio();apply();updateBtn();}
+  function setSound(on){soundOn=on;if(on){initAudio();startLoop();}else{stopLoop();}apply();updateBtn();}
   if(play)play.addEventListener('click',function(){setSound(true);});
   if(stopBtn)stopBtn.addEventListener('click',function(){setSound(false);});
   if(snd)snd.addEventListener('click',function(){setSound(!soundOn);});
